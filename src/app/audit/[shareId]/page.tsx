@@ -1,4 +1,4 @@
- 'use client';
+'use client';
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
@@ -13,6 +13,7 @@ export default function AuditPage() {
   const [email, setEmail] = useState('');
   const [company, setCompany] = useState('');
   const [role, setRole] = useState('');
+  const [honeypot, setHoneypot] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -51,6 +52,9 @@ export default function AuditPage() {
   }, [shareId]);
 
   const handleLeadSubmit = async () => {
+    // Honeypot check - if filled, it's a bot
+    if (honeypot) return;
+
     if (!email) return alert('Please enter your email!');
     setSubmitting(true);
     try {
@@ -205,6 +209,16 @@ export default function AuditPage() {
             <h2 className="text-xl font-semibold mb-1">📩 Get Your Full Report</h2>
             <p className="text-gray-400 text-sm mb-4">We will email you this audit and notify you when new savings apply.</p>
             <div className="space-y-3">
+              {/* Honeypot field - hidden from real users */}
+              <input
+                type="text"
+                name="website"
+                value={honeypot}
+                onChange={e => setHoneypot(e.target.value)}
+                style={{ display: 'none' }}
+                tabIndex={-1}
+                autoComplete="off"
+              />
               <input
                 type="email"
                 placeholder="your@email.com *"
@@ -253,4 +267,3 @@ export default function AuditPage() {
     </main>
   );
 }
-
