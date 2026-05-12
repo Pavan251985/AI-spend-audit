@@ -1,269 +1,244 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { AuditResult } from '@/types';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { nanoid } from 'nanoid';
+import { AITool, AuditInput } from '@/types';
+import { runAudit } from '@/lib/auditEngine';
 import { supabase } from '@/lib/supabase';
+import { generateAuditSummary } from '@/lib/gemini';
 
-export default function AuditPage() {
-  const params = useParams();
-  const shareId = params.shareId as string;
-  const [audit, setAudit] = useState<AuditResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState('');
-  const [company, setCompany] = useState('');
-  const [role, setRole] = useState('');
-  const [honeypot, setHoneypot] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [copied, setCopied] = useState(false);
+const TOOLS = [
+  { id: 'cursor', name: 'Cursor', plans: ['Hobby', 'Pro', 'Business', 'Enterprise'] },
+  { id: 'github_copilot', name: 'GitHub Copilot', plans: ['Individual', 'Business', 'Enterprise'] },
+  { id: 'claude', name: 'Claude', plans: ['Free', 'Pro', 'Max', 'Team', 'Enterprise'] },
+  { id: 'chatgpt', name: 'ChatGPT', plans: ['Plus', 'Team', 'Enterprise'] },
+  { id: 'gemini', name: 'Gemini', plans: ['Pro', 'Ultra'] },
+  { id: 'windsurf', name: 'Windsurf', plans: ['Free', 'Pro', 'Team'] },
+];
+
+const USE_CASES = ['coding', 'writing', 'data', 'research', 'mixed'];
+
+export default function Home() {
+  const router = useRouter();
+  const [teamSize, setTeamSize] = useState(1);
+  const [useCase, setUseCase] = useState('mixed');
+  const [selectedTools, setSelectedTools] = useState<AITool[]>([]);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const loadAudit = async () => {
-      const cached = localStorage.getItem('audit_' + shareId);
-      if (cached) {
-        setAudit(JSON.parse(cached));
-        setLoading(false);
-        return;
-      }
-      const { data } = await supabase
-        .from('audits')
-        .select('*')
-        .eq('share_id', shareId)
-        .single();
-      if (data) {
-        setAudit({
-          shareId: data.share_id,
-          recommendations: data.audit_results,
-          totalMonthlySavings: data.total_monthly_savings,
-          totalAnnualSavings: data.total_annual_savings,
-          aiSummary: data.ai_summary,
-          input: {
-            tools: data.tools,
-            teamSize: data.team_size,
-            useCase: data.use_case,
-          },
-          createdAt: data.created_at,
-        });
-      }
-      setLoading(false);
-    };
-    loadAudit();
-  }, [shareId]);
+    const saved = localStorage.getItem('auditInput');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      setTeamSize(parsed.teamSize || 1);
+      setUseCase(parsed.useCase || 'mixed');
+      setSelectedTools(parsed.tools || []);
+    }
+  }, []);
 
-  const handleLeadSubmit = async () => {
-    // Honeypot check - if filled, it's a bot
-    if (honeypot) return;
+  useEffect(() => {
+    localStorage.setItem('auditInput', JSON.stringify({ teamSize, useCase, tools: selectedTools }));
+  }, [teamSize, useCase, selectedTools]);
 
-    if (!email) return alert('Please enter your email!');
-    setSubmitting(true);
+  const toggleTool = (toolId: string) => {
+    const tool = TOOLS.find(t => t.id === toolId)!;
+    if (selectedTools.find(t => t.id === toolId)) {
+      setSelectedTools(selectedTools.filter(t => t.id !== toolId));
+    } else {
+      setSelectedTools([...selectedTools, {
+        id: toolId,
+        name: toolId,
+        plan: tool.plans[0].toLowerCase(),
+        monthlySpend: 0,
+        seats: 1,
+      }]);
+    }
+  };
+
+  const updateTool = (toolId: string, field: string, value: string | number) => {
+    setSelectedTools(selectedTools.map(t =>
+      t.id === toolId ? { ...t, [field]: value } : t
+    ));
+  };
+
+  const handleSubmit = async () => {
+    if (selectedTools.length === 0) return alert('Please select at least one tool!');
+    setLoading(true);
+
     try {
-      const { data: auditData } = await supabase
-        .from('audits')
-        .select('id')
-        .eq('share_id', shareId)
-        .single();
-      await supabase.from('leads').insert({
-        audit_id: auditData?.id,
-        email,
-        company_name: company,
-        role,
-        team_size: audit?.input.teamSize,
+      const input: AuditInput = {
+        tools: selectedTools,
+        teamSize,
+        useCase: useCase as AuditInput['useCase'],
+      };
+      const recommendations = runAudit(input);
+      const totalMonthlySavings = recommendations.reduce((sum, r) => sum + r.monthlySavings, 0);
+      const totalAnnualSavings = totalMonthlySavings * 12;
+      const shareId = nanoid(10);
+
+      const auditData = {
+        input,
+        recommendations,
+        totalMonthlySavings,
+        totalAnnualSavings,
+        shareId,
+        aiSummary: '',
+        createdAt: new Date().toISOString(),
+      };
+
+      const aiSummary = await generateAuditSummary(auditData);
+      auditData.aiSummary = aiSummary;
+
+      await supabase.from('audits').insert({
+        share_id: shareId,
+        tools: selectedTools,
+        team_size: teamSize,
+        use_case: useCase,
+        total_monthly_savings: totalMonthlySavings,
+        total_annual_savings: totalAnnualSavings,
+        audit_results: recommendations,
+        ai_summary: aiSummary,
       });
-      await fetch('/api/leads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, company, totalMonthlySavings: audit?.totalMonthlySavings }),
-      });
-      setSubmitted(true);
+
+      localStorage.setItem('audit_' + shareId, JSON.stringify(auditData));
+      router.push('/audit/' + shareId);
     } catch (err) {
       console.error(err);
       alert('Something went wrong. Please try again.');
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-white text-xl animate-pulse">Loading your audit...</div>
-      </div>
-    );
-  }
-
-  if (!audit) {
-    return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-white text-xl">Audit not found.</div>
-      </div>
-    );
-  }
-
-  const isHighSavings = audit.totalMonthlySavings > 500;
-  const isOptimal = audit.totalMonthlySavings < 100;
-
   return (
     <main className="min-h-screen bg-gray-950 text-white">
-      <div className="bg-gradient-to-b from-green-900/30 to-gray-950 py-12 px-4 text-center">
-        <h1 className="text-3xl md:text-5xl font-bold mb-2">Your AI Spend Audit</h1>
-        <p className="text-gray-400">Here is where your money is going and how to keep more of it.</p>
+      {/* Hero */}
+      <div className="bg-gradient-to-b from-green-900/30 to-gray-950 py-16 px-4 text-center">
+        <h1 className="text-4xl md:text-6xl font-bold mb-4">
+          Are You <span className="text-green-400">Overpaying</span> for AI Tools?
+        </h1>
+        <p className="text-gray-400 text-lg md:text-xl max-w-2xl mx-auto">
+          Get a free instant audit of your AI subscriptions. See exactly where you are wasting money and how much you could save.
+        </p>
       </div>
 
-      <div className="max-w-3xl mx-auto px-4 pb-16">
-
-        <div className="bg-gray-900 border border-green-700 rounded-2xl p-8 mb-6 text-center">
-          <p className="text-gray-400 mb-2">Total Potential Savings</p>
-          <div className="text-6xl font-bold text-green-400 mb-2">
-            ${audit.totalMonthlySavings.toFixed(0)}<span className="text-2xl">/mo</span>
-          </div>
-          <div className="text-2xl text-green-300 font-semibold">
-            ${audit.totalAnnualSavings.toFixed(0)} per year
+      <div className="max-w-3xl mx-auto px-4 pb-8">
+        {/* Team Info */}
+        <div className="bg-gray-900 rounded-2xl p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-4">Your Team</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Team Size</label>
+              <input
+                type="number"
+                min={1}
+                value={teamSize}
+                onChange={e => setTeamSize(Number(e.target.value))}
+                className="w-full bg-gray-800 rounded-lg px-4 py-2 text-white border border-gray-700 focus:border-green-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Primary Use Case</label>
+              <select
+                value={useCase}
+                onChange={e => setUseCase(e.target.value)}
+                className="w-full bg-gray-800 rounded-lg px-4 py-2 text-white border border-gray-700 focus:border-green-500 outline-none"
+              >
+                {USE_CASES.map(uc => (
+                  <option key={uc} value={uc}>{uc.charAt(0).toUpperCase() + uc.slice(1)}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
+        {/* Tool Selection */}
         <div className="bg-gray-900 rounded-2xl p-6 mb-6">
-          <h2 className="text-lg font-semibold mb-3 text-green-400">✨ Personalized Summary</h2>
-          <p className="text-gray-300 leading-relaxed">{audit.aiSummary}</p>
-        </div>
+          <h2 className="text-xl font-semibold mb-4">Select Your AI Tools</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+            {TOOLS.map(tool => (
+              <button
+                key={tool.id}
+                onClick={() => toggleTool(tool.id)}
+                className={
+                  'p-3 rounded-xl border text-sm font-medium transition-all ' +
+                  (selectedTools.find(t => t.id === tool.id)
+                    ? 'border-green-500 bg-green-500/10 text-green-400'
+                    : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-500')
+                }
+              >
+                {tool.name}
+              </button>
+            ))}
+          </div>
 
-        <div className="bg-gray-900 rounded-2xl p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">📊 Tool-by-Tool Breakdown</h2>
-          {audit.recommendations.map((rec, i) => (
-            <div key={i} className="border border-gray-800 rounded-xl p-4 mb-3">
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <span className="font-semibold text-white capitalize">
-                    {rec.toolName.replace('_', ' ')}
-                  </span>
-                  <span className={
-                    'ml-2 text-xs px-2 py-0.5 rounded-full ' +
-                    (rec.priority === 'high' ? 'bg-red-500/20 text-red-400' :
-                    rec.priority === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-green-500/20 text-green-400')
-                  }>
-                    {rec.priority} priority
-                  </span>
-                </div>
-                <div className="text-right">
-                  <div className="text-green-400 font-bold">${rec.monthlySavings.toFixed(0)}/mo saved</div>
-                  <div className="text-gray-500 text-sm line-through">${rec.currentSpend}/mo</div>
+          {selectedTools.map(tool => {
+            const toolConfig = TOOLS.find(t => t.id === tool.id)!;
+            return (
+              <div key={tool.id} className="bg-gray-800 rounded-xl p-4 mb-3">
+                <h3 className="font-semibold text-green-400 mb-3">{toolConfig.name}</h3>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-gray-400 text-xs mb-1 block">Plan</label>
+                    <select
+                      value={tool.plan}
+                      onChange={e => updateTool(tool.id, 'plan', e.target.value)}
+                      className="w-full bg-gray-700 rounded-lg px-2 py-1.5 text-white text-sm border border-gray-600 outline-none"
+                    >
+                      {toolConfig.plans.map(p => (
+                        <option key={p} value={p.toLowerCase()}>{p}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs mb-1 block">Monthly Spend ($)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={tool.monthlySpend}
+                      onChange={e => updateTool(tool.id, 'monthlySpend', Number(e.target.value))}
+                      className="w-full bg-gray-700 rounded-lg px-2 py-1.5 text-white text-sm border border-gray-600 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs mb-1 block">Seats</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={tool.seats}
+                      onChange={e => updateTool(tool.id, 'seats', Number(e.target.value))}
+                      className="w-full bg-gray-700 rounded-lg px-2 py-1.5 text-white text-sm border border-gray-600 outline-none"
+                    />
+                  </div>
                 </div>
               </div>
-              <div className="text-green-300 font-medium text-sm mb-1">→ {rec.recommendedAction}</div>
-              <div className="text-gray-400 text-sm">{rec.reason}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {isHighSavings && (
-          <div className="bg-gray-900 border border-green-500 rounded-2xl p-6 mb-6">
-            <h2 className="text-xl font-bold mb-2">💡 Save Even More with Credex</h2>
-            <p className="text-gray-300 mb-4">
-              You are leaving ${audit.totalMonthlySavings.toFixed(0)}/month on the table.
-              Credex sells discounted AI credits at up to 40% off retail price.
-            </p>
-            <a
-              href="https://credex.rocks"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-block bg-green-500 hover:bg-green-400 text-black font-bold px-6 py-3 rounded-xl"
-            >
-              Book a Free Credex Consultation →
-            </a>
-          </div>
-        )}
-
-        {isOptimal && (
-          <div className="bg-gray-900 border border-green-700 rounded-2xl p-6 mb-6">
-            <h2 className="text-xl font-bold mb-2">✅ You are Spending Well!</h2>
-            <p className="text-gray-300">Your AI tool spend looks optimized. We will notify you when new savings opportunities apply to your stack.</p>
-          </div>
-        )}
-
-        <div className="bg-gray-900 rounded-2xl p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-3">🔗 Share Your Audit</h2>
-          <div className="flex gap-3">
-            <input
-              readOnly
-              value={typeof window !== 'undefined' ? window.location.href : ''}
-              className="flex-1 bg-gray-800 rounded-xl px-4 py-2 text-gray-400 text-sm border border-gray-700"
-            />
-            <button
-              onClick={copyLink}
-              className="bg-green-500 hover:bg-green-400 text-black font-bold px-4 py-2 rounded-xl"
-            >
-              {copied ? '✓ Copied!' : 'Copy'}
-            </button>
-          </div>
-        </div>
-
-        {!submitted ? (
-          <div className="bg-gray-900 rounded-2xl p-6">
-            <h2 className="text-xl font-semibold mb-1">📩 Get Your Full Report</h2>
-            <p className="text-gray-400 text-sm mb-4">We will email you this audit and notify you when new savings apply.</p>
-            <div className="space-y-3">
-              {/* Honeypot field - hidden from real users */}
-              <input
-                type="text"
-                name="website"
-                value={honeypot}
-                onChange={e => setHoneypot(e.target.value)}
-                style={{ display: 'none' }}
-                tabIndex={-1}
-                autoComplete="off"
-              />
-              <input
-                type="email"
-                placeholder="your@email.com *"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                className="w-full bg-gray-800 rounded-xl px-4 py-3 text-white border border-gray-700 outline-none"
-              />
-              <input
-                type="text"
-                placeholder="Company name (optional)"
-                value={company}
-                onChange={e => setCompany(e.target.value)}
-                className="w-full bg-gray-800 rounded-xl px-4 py-3 text-white border border-gray-700 outline-none"
-              />
-              <input
-                type="text"
-                placeholder="Your role (optional)"
-                value={role}
-                onChange={e => setRole(e.target.value)}
-                className="w-full bg-gray-800 rounded-xl px-4 py-3 text-white border border-gray-700 outline-none"
-              />
-              <button
-                onClick={handleLeadSubmit}
-                disabled={submitting}
-                className="w-full bg-green-500 hover:bg-green-400 disabled:bg-gray-700 text-black font-bold py-3 rounded-xl"
-              >
-                {submitting ? 'Sending...' : '📨 Send Me the Report'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-gray-900 border border-green-700 rounded-2xl p-6 text-center">
-            <div className="text-4xl mb-2">🎉</div>
-            <h2 className="text-xl font-bold mb-1">Report sent!</h2>
-            <p className="text-gray-400">Check your inbox. We will be in touch if we spot more savings for you.</p>
-          </div>
-        )}
-
-        <div className="text-center mt-6">
-          <a href="/" className="text-green-400 hover:text-green-300 text-sm underline">
-            ← Run a new audit
-          </a>
-        </div>
-
+        {/* Submit */}
+        <button
+          onClick={handleSubmit}
+          disabled={loading || selectedTools.length === 0}
+          className="w-full bg-green-500 hover:bg-green-400 disabled:bg-gray-700 disabled:cursor-not-allowed text-black font-bold py-4 rounded-2xl text-lg transition-all"
+        >
+          {loading ? 'Analyzing your spend...' : '🔍 Run My Free Audit'}
+        </button>
       </div>
+
+      {/* Footer */}
+      <footer className="border-t border-gray-800 py-6 px-4 text-center mt-8">
+        <p className="text-gray-500 text-sm">
+          Built by{' '}
+          <a href="https://credex.rocks" target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300">
+            Credex
+          </a>
+          {' '}— Discounted AI credits for startups
+        </p>
+        <p className="text-gray-600 text-xs mt-1">
+          Pricing data verified weekly from official vendor pages
+        </p>
+      </footer>
     </main>
   );
 }
