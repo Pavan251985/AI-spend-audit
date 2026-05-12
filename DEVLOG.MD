@@ -47,3 +47,14 @@
 **Blockers / what I'm stuck on:** None — all features working end to end.
 
 **Plan for tomorrow:** Submit the assignment.
+## Day 4 — 2026-05-12
+
+**Hours worked:** 6
+
+**What I did:** Added navigation bar with Credex branding. Improved mobile responsiveness. Added honeypot abuse protection to lead capture form. Added Open Graph and Twitter meta tags for shareable URLs. Updated all markdown documentation files.
+
+**What I learned:** How to implement honeypot spam protection. How to configure Open Graph meta tags in Next.js App Router using the metadata API.
+
+**Blockers / what I'm stuck on:** Git commit history only spans 3 days instead of required 5 — being honest about this in REFLECTION.md.
+
+**Plan for tomorrow:** Final polish, run Lighthouse audit, submit via Google Form before deadline.
