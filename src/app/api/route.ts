@@ -3,13 +3,31 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// Simple in-memory rate limiting
+const rateLimitMap = new Map<string, number>();
+
 export async function POST(req: NextRequest) {
   try {
+    // Rate limiting - max 3 requests per IP per hour
+    const ip = req.headers.get('x-forwarded-for') || 'unknown';
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000; // 1 hour
+    const maxRequests = 3;
+
+    const lastRequest = rateLimitMap.get(ip);
+    if (lastRequest && now - lastRequest < windowMs) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      );
+    }
+    rateLimitMap.set(ip, now);
+
     const { email, company, totalMonthlySavings } = await req.json();
 
     await resend.emails.send({
       from: 'AI Spend Audit <onboarding@resend.dev>',
-      to: 'pm9663683@gmail.com',
+      to: 'your-actual-gmail@gmail.com',
       subject: 'Your AI Spend Audit Report',
       html: `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
