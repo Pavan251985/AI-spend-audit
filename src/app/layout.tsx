@@ -37,6 +37,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <nav className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex justify-between items-center">
+          <a href="/" className="text-green-400 font-bold text-lg">💰 AI Spend Audit</a>
+          <a href="https://credex.rocks" target="_blank" rel="noreferrer" className="text-sm text-gray-400 hover:text-white transition-colors">
+            Powered by Credex →
+          </a>
+        </nav>
         {children}
       </body>
     </html>
